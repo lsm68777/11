@@ -3886,7 +3886,10 @@ class AdvancedLeverageRiskManager:
             }
 
     def _convert_to_signal_data(self, data: Dict) -> SignalData:
-        """Convert dictionary to SignalData model with comprehensive validation - SPOT only"""
+        """
+        Convert dictionary to SignalData model with comprehensive validation - SPOT only
+        Optimized for high-performance system (128GB RAM, 16-24 cores)
+        """
         
         # Basic data validation
         if not data:
@@ -3895,22 +3898,45 @@ class AdvancedLeverageRiskManager:
         if not isinstance(data, dict):
             raise ValueError(f"Invalid data type: expected dict, received {type(data)}")
         
-        # Handle nested signal data structure
-        signal_sources = [
-            data.get("signal_data"),
-            data.get("signal"), 
-            data.get("phoenix_signal"),
-            data  # Fallback to original data
-        ]
-        
+        # Enhanced signal data extraction with priority-based fallback
         signal_data_dict = None
-        for source in signal_sources:
+        signal_source = "unknown"
+        
+        # Priority 1: Check explicit signal keys
+        priority_keys = ["signal_data", "signal", "phoenix_signal"]
+        for key in priority_keys:
+            source = data.get(key)
             if source and isinstance(source, dict):
                 signal_data_dict = source
+                signal_source = key
                 break
         
+        # Priority 2: Check if root level contains required fields
         if not signal_data_dict:
-            raise ValueError("No valid signal data found in any expected location")
+            required_root_fields = ["symbol", "action", "price"]
+            if all(field in data for field in required_root_fields):
+                signal_data_dict = data
+                signal_source = "root_level"
+                logging.debug("Signal data extracted from root level")
+        
+        # Priority 3: Check nested 'data' field
+        if not signal_data_dict and "data" in data and isinstance(data["data"], dict):
+            nested_data = data["data"]
+            if all(field in nested_data for field in ["symbol", "action", "price"]):
+                signal_data_dict = nested_data
+                signal_source = "nested_data_field"
+                logging.debug("Signal data extracted from nested 'data' field")
+        
+        # Validation failure with detailed diagnostics
+        if not signal_data_dict:
+            available_keys = list(data.keys())
+            raise ValueError(
+                f"No valid signal data found. "
+                f"Expected keys: {priority_keys} or root-level fields (symbol, action, price). "
+                f"Received keys: {available_keys}"
+            )
+        
+        logging.debug(f"Signal data successfully extracted from: {signal_source}")
         
         # Extract and validate required fields
         symbol = signal_data_dict.get("symbol")
@@ -3918,7 +3944,7 @@ class AdvancedLeverageRiskManager:
         price = signal_data_dict.get("price")
         confidence = signal_data_dict.get("confidence", 0.8)
         
-        # Required field validation
+        # Required field validation with detailed error messages
         if not symbol:
             raise ValueError("Required field 'symbol' is missing")
         if not action:
@@ -3931,11 +3957,11 @@ class AdvancedLeverageRiskManager:
         if not symbol_str:
             raise ValueError("Symbol cannot be empty")
 
-        # Remove .P suffix (legacy futures format) - SPOT API only
+        # Remove legacy futures suffix (.P) - SPOT API only
         spot_symbol = symbol_str.replace('.P', '')
         
-        # Validate base symbol (without USDT/BUSD suffix)
-        clean_symbol = spot_symbol.replace('USDT', '').replace('BUSD', '')
+        # Validate base symbol (without stablecoin suffix)
+        clean_symbol = spot_symbol.replace('USDT', '').replace('BUSD', '').replace('USDC', '')
         if not clean_symbol.isalnum():
             raise ValueError(f"Invalid symbol format: {symbol_str}")
         
@@ -3945,7 +3971,7 @@ class AdvancedLeverageRiskManager:
         if action_str not in valid_actions:
             raise ValueError(f"Invalid action '{action_str}'. Valid options: {valid_actions}")
         
-        # Normalize action shortcuts
+        # Normalize action shortcuts for convenience
         action_mapping = {"B": "BUY", "L": "LONG", "S": "SELL"}
         normalized_action = action_mapping.get(action_str, action_str)
         
@@ -3954,12 +3980,12 @@ class AdvancedLeverageRiskManager:
             price_float = float(price)
             if price_float <= 0:
                 raise ValueError(f"Price must be positive: {price_float}")
-            if price_float > 10000000:  # 10M USD limit
+            if price_float > 10000000:  # 10M USD limit for safety
                 raise ValueError(f"Price exceeds maximum limit: {price_float}")
             
             confidence_float = float(confidence)
             if not (0 <= confidence_float <= 1):
-                # Auto-convert percentage format
+                # Auto-convert percentage format (0-100) to decimal (0-1)
                 if 0 <= confidence_float <= 100:
                     confidence_float = confidence_float / 100
                     logging.debug(f"Converted percentage confidence to decimal: {confidence_float}")
@@ -3976,7 +4002,7 @@ class AdvancedLeverageRiskManager:
             timestamp_float = float(timestamp)
             current_time = time.time()
             
-            # Validate timestamp is reasonable (not future, not too old)
+            # Validate timestamp is reasonable (not future, not older than 24 hours)
             if timestamp_float > current_time or timestamp_float < current_time - 86400:
                 logging.warning(f"Invalid timestamp {timestamp_float}, using current time")
                 timestamp_float = current_time
@@ -8779,7 +8805,7 @@ class AdvancedRiskService:
                 "pipeline_status": self._get_pipeline_status(),
                 "timestamp": time.time()
             }
-        
+
         @self.app.post("/risk/validate")
         async def validate_risk_advanced(request: Request):
             """Advanced risk validation with automatic service integration"""
@@ -8790,10 +8816,63 @@ class AdvancedRiskService:
 
                 data = await request.json()
 
-                # Validate request data
-                signal_data = data.get("signal") or data.get("signal_data") or data.get("phoenix_signal")
+                # Enhanced signal data extraction with multiple fallback paths
+                signal_data = None
+                signal_source = "unknown"
+                
+                # Priority 1: Direct signal keys
+                if "signal" in data and data["signal"]:
+                    signal_data = data["signal"]
+                    signal_source = "signal"
+                elif "signal_data" in data and data["signal_data"]:
+                    signal_data = data["signal_data"]
+                    signal_source = "signal_data"
+                elif "phoenix_signal" in data and data["phoenix_signal"]:
+                    signal_data = data["phoenix_signal"]
+                    signal_source = "phoenix_signal"
+                
+                # Priority 2: Check if data itself contains signal fields
+                elif all(key in data for key in ["symbol", "action", "price"]):
+                    signal_data = data
+                    signal_source = "root_level"
+                    logging.debug("Signal data found at root level")
+                
+                # Priority 3: Check nested structures
+                elif "data" in data and isinstance(data["data"], dict):
+                    nested_data = data["data"]
+                    if all(key in nested_data for key in ["symbol", "action", "price"]):
+                        signal_data = nested_data
+                        signal_source = "nested_data"
+                        logging.debug("Signal data found in nested 'data' field")
+                
+                # Validation failure with detailed error message
                 if not signal_data:
-                    raise HTTPException(status_code=400, detail="Signal data missing")
+                    available_keys = list(data.keys())
+                    error_detail = {
+                        "error": "Signal data missing",
+                        "expected_keys": ["signal", "signal_data", "phoenix_signal"],
+                        "alternative": "Root level fields: symbol, action, price",
+                        "received_keys": available_keys,
+                        "hint": "Send data as: {\"signal\": {\"symbol\": \"BTCUSDT\", \"action\": \"BUY\", \"price\": 50000.0, \"confidence\": 0.85}}"
+                    }
+                    logging.warning(f"Signal data missing. Received keys: {available_keys}")
+                    raise HTTPException(status_code=400, detail=error_detail)
+                
+                # Validate required signal fields
+                required_fields = ["symbol", "action", "price"]
+                missing_fields = [field for field in required_fields if field not in signal_data]
+                
+                if missing_fields:
+                    error_detail = {
+                        "error": "Required signal fields missing",
+                        "missing_fields": missing_fields,
+                        "required_fields": required_fields,
+                        "received_fields": list(signal_data.keys()) if isinstance(signal_data, dict) else []
+                    }
+                    logging.warning(f"Missing required fields: {missing_fields}")
+                    raise HTTPException(status_code=400, detail=error_detail)
+                
+                logging.debug(f"Signal data extracted from: {signal_source}")
 
                 # Execute risk validation
                 validation_result = await self.risk_manager.validate_position_risk(data)
@@ -8805,7 +8884,6 @@ class AdvancedRiskService:
                     self.performance_metrics["approved_requests"] += 1
 
                     # Start position monitoring
-
                     if "risk_profile" in validation_result:
                         position_id = f"POS_{int(time.time() * 1000)}"
                         risk_profile_dict = validation_result["risk_profile"]
@@ -8849,7 +8927,7 @@ class AdvancedRiskService:
                             position_id, risk_profile
                         )
 
-                        # Save to Redis
+                        # Save to Redis with enhanced error handling
                         try:
                             if self.redis:
                                 position_json = safe_json_dumps(asdict(position_to_save))
